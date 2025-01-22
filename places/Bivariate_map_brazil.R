@@ -2,8 +2,8 @@
 library(tidyverse)
 library(sf)
 library(terra)
-library(rgeoboundaries) #https://www.geoboundaries.org/index.html
-library(climateR) #https://github.com/mikejohnson51/climateR/
+library(rgeoboundaries)
+library(climateR)
 library(biscale)
 
 #install.packages("remotes")
