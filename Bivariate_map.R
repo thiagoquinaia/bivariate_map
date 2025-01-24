@@ -5,26 +5,46 @@ library(terra)
 library(rgeoboundaries) #https://www.geoboundaries.org/index.html
 library(climateR) #https://github.com/mikejohnson51/climateR/
 library(biscale)
+# Adicionar biblioteca
+library(ggspatial)
 
 #install.packages("remotes")
 #remotes::install_github("wmgeolab/rgeoboundaries")
 #remotes::install_github("mikejohnson51/climateR")
 
 # Load United Kingdom boundary data at the country level (administrative level 0)
-br0 <- geoboundaries(country = c("Brazil"))
+br0 <- geoboundaries(country = c("Brazil"), adm_lvl = "adm1")
 
 # Load United Kingdom boundary data at the first administrative level (e.g., regions)
-br1 <- geoboundaries(country = c("Brazil"), adm_lvl = "adm1")
+br1 <- geoboundaries(country = c("Brazil"), adm_lvl = "adm2")
 
-# Plot the geometry of administrative level 1 boundaries with a gray border
-plot(st_geometry(br1), border = "gray")
+city <- 'Amapa'
 
-# Add the country boundary (administrative level 0) to the existing plot in bold
-plot(st_geometry(br0), add = TRUE, size = 2)
+# Filtrar Minas Gerais
+mg0 <- br0 %>%
+  filter(shapeName == city)
+
+# Identificar municípios que intersectam MG
+mg1 <- br1 %>%
+  mutate(
+    intersects_mg = st_intersects(., mg0) %>% lengths > 0
+  ) %>%
+  filter(intersects_mg) %>%
+  mutate(
+    area_original = st_area(.),
+    intersecao = st_intersection(., mg0),
+    area_intersecao = st_area(intersecao)
+  ) %>%
+  filter(as.numeric(area_intersecao/area_original) > 0.5) %>%
+  select(-c(area_original, intersecao, area_intersecao, intersects_mg))
+
+# Plotar MG
+plot(st_geometry(mg1), border = "gray")
+plot(st_geometry(mg0), add = TRUE, border = "black", lwd = 2)
 
 
 # Retrieve TerraClimate data for the United Kingdom with specified variables (max and min temperature)
-temp_terra = getTerraClim(AOI = br0, 
+temp_terra = getTerraClim(AOI = mg0, 
                           varname = c("tmax", "tmin"),
                           startDate = "1994-01-01",
                           endDate  = "2023-12-01")
@@ -44,14 +64,14 @@ new_raster <- rast(ext(annual_mean_temp), resolution = new_res, crs = crs(annual
 annual_mean_temp <- resample(x = annual_mean_temp, y = new_raster, method="bilinear")
 
 # Crop the resampled temperature data to match the boundaries of the Brazil
-br_temp <- terra::crop(annual_mean_temp, y = br0, mask = TRUE)
+br_temp <- terra::crop(annual_mean_temp, y = mg0, mask = TRUE)
 
 # Plot the cropped annual mean temperature for the Brazil
 plot(br_temp)
 
 ####### Precipitação ######
 # Retrieve TerraClimate data for precipitation in the Brazil
-ppt_terra = getTerraClim(AOI = br0, 
+ppt_terra = getTerraClim(AOI = mg0, 
                          varname = "ppt",
                          startDate = "1994-01-01",
                          endDate  = "2023-12-01")
@@ -64,7 +84,7 @@ new_raster <- rast(ext(annual_mean_ppt), resolution = new_res, crs = crs(annual_
 annual_mean_ppt <- resample(x = annual_mean_ppt, y = new_raster, method = "bilinear")
 
 # Crop the resampled precipitation data to match the boundaries of the United Kingdom
-br_ppt <- terra::crop(annual_mean_ppt, y = br0, mask = TRUE)
+br_ppt <- terra::crop(annual_mean_ppt, y = mg0, mask = TRUE)
 
 # Plot the cropped annual mean precipitation for the United Kingdom
 plot(br_ppt)
@@ -80,7 +100,7 @@ names(temp_ppt) <- c("temp", "ppt")
 # Project the combined temperature and precipitation raster stack to match the projection of the UK boundary
 # Then convert the raster data to a data frame, retaining the x and y coordinates for mapping
 temp_ppt_df <- temp_ppt |> 
-  project(br0) |> 
+  project(mg0) |> 
   as.data.frame(xy = TRUE)
 
 # Display the first few rows of the resulting data frame to verify the data
@@ -105,21 +125,36 @@ data |>
 # Set the color palette for the bivariate map
 pallet <- "GrPink2"
 
+# Obter limites com margem
+bbox_mg <- st_bbox(mg0)
+margin <- 0.1  # margem em graus
+
 # Create the bivariate map using ggplot2
 map <- ggplot() +
   theme_void(base_size = 14) +  # Set a minimal theme for the map
-  xlim(-76.44, -32.7) +  # Set the x-axis limits for the map (longitude range)
-  ylim(-35.4, 7.9) +  # Set the y-axis limits for the map (latitude range)
-  # Plot the bivariate raster data with appropriate fill color based on bivariate classes
-  geom_raster(data = data, mapping = aes(x = x, y = y, fill = bi_class), color = NA, linewidth = 0.1, show.legend = FALSE) +
-  # Apply the bivariate color scale using the selected palette and dimensions
-  bi_scale_fill(pal = pallet, dim = 4, flip_axes = FALSE, rotate_pal = FALSE) +
-  # Overlay the first administrative level boundaries of the United Kingdom
-  geom_sf(data = br1, fill = NA, color = "white", linewidth = 0.20) +
+  xlim(bbox_mg[1] - margin, bbox_mg[3] + margin) +  # xmin e xmax com margem
+  ylim(bbox_mg[2] - margin, bbox_mg[4] + margin) +  # ymin e ymax com margem
   # Overlay the country-level boundary of the United Kingdom
   geom_sf(data = br0, fill = NA, color = "black", linewidth = 0.40) +
+  # Overlay the first administrative level boundaries of the Minas Gerais
+  # Plot the bivariate raster data with appropriate fill color based on bivariate classes
+  geom_raster(data = data, mapping = aes(x = x, y = y, fill = bi_class), color = NA, linewidth = 0.1, show.legend = FALSE) +
+  # Overlay the first administrative level boundaries of the Minas Gerais
+  geom_sf(data = mg1, fill = NA, color = "white", linewidth = 0.05) +
+  # Apply the bivariate color scale using the selected palette and dimensions
+  bi_scale_fill(pal = pallet, dim = 4, flip_axes = FALSE, rotate_pal = FALSE) +
+  # Adicionar barra de escala
+  annotation_scale(
+    location = "bl",           # bottom left
+    width_hint = 0.25,         # largura da barra
+    style = "bar",
+    bar_cols = c("black", "white"),
+    text_col = "black",
+    pad_x = unit(0.5, "cm"),  # padding x
+    pad_y = unit(0.5, "cm")   # padding y
+  ) +
   # Add labels for the map
-  labs(title = "Brasil: Padrões de Temperatura e Precipitação", 
+  labs(title = "Amapá: Padrões de Temperatura e Precipitação", 
        subtitle = "Média de Temperatura e Precipitação dos últimos 29 anos",
        caption = "Fonte: Terra Climate Data - Autor: Thiago Quinaia") +
   # Customize the appearance of the title, subtitle, and caption
@@ -134,7 +169,7 @@ legend <- bi_legend(pal = pallet,
                     dim = 4,
                     xlab = "Temperatura (Cº)",
                     ylab = "Precipitação (mm)",
-                    size = 10,
+                    size = 8,
                     pad_color = "black")
 
 # Combine the map and legend using cowplot
@@ -186,14 +221,40 @@ value_legend <- ggplot(legend_data, aes(x=y, y=x)) +
   coord_equal() +
   theme_void()
 
-# Modificar o finalPlot para incluir a nova legenda
+# Modificar o finalPlot para layout sem sobreposição
 finalPlot <- ggdraw() +
-  draw_plot(map, 0, 0, 1, 1) +
-  #draw_plot(value_legend, 0.05, 0.05, 0.35, 0.35)+
-  draw_plot(legend, 0.05, 0.05, 0.35, 0.35)
+  # Mapa principal ocupando 70% da largura
+  draw_plot(map, 0, 0, 0.7, 1) +
+  # Legenda na direita ocupando 30% da largura
+  draw_plot(legend, 0.65, 0.35, 0.25, 0.25)
+  # Value legend abaixo (se necessário)
+  #draw_plot(value_legend, 0.75, 0.05, 0.25, 0.3)
 
 
 # Display the final map with legend
 finalPlot
 
-ggsave("BR_Temp_PPT.png", finalPlot, dpi = 400, width = 10, height = 7)
+# Calcular proporção do mapa
+bbox_width <- bbox_mg[3] - bbox_mg[1]
+bbox_height <- bbox_mg[4] - bbox_mg[2]
+aspect_ratio <- bbox_width/bbox_height
+
+# Definir tamanho base e ajustar dimensões
+base_size <- 7
+width <- base_size * aspect_ratio
+height <- base_size
+
+# Adicionar espaço para legenda (30% extra na largura)
+width_with_legend <- width * 1.3
+
+# Salvar com dimensões apropriadas
+ggsave(
+  "BR_Temp_PPT_amapa.png", 
+  finalPlot, 
+  dpi = 600, 
+  width = width_with_legend, 
+  height = height,
+  units = "in",
+  bg = "white",
+  limitsize = FALSE
+)
